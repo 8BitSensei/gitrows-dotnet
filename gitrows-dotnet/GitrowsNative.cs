@@ -231,8 +231,8 @@ namespace gitrows_dotnet
                     {
                         case "eq":
                             if (valueType == typeof(int))
-                                conditionActions.Add(x =>
-                                    (int)(x as IDictionary<string, object>)[property] == int.Parse(value));
+                                conditionActions.Add(x => 
+                                x.TryParsePropertyAsInt(property, out var asInt) && asInt == int.Parse(value));
                             else if (valueType == typeof(string))
                                 conditionActions.Add(x =>
                                     (x as IDictionary<string, object>)[property].ToString().Equals(value));
