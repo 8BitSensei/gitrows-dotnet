@@ -1,12 +1,8 @@
 ﻿using gitrows_dotnet.utils;
-using System;
 using System.Dynamic;
 using System.Net;
-using System.Net.Http.Json;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using System.Linq;
 using System.Text.Json.Serialization;
 
 namespace gitrows_dotnet
@@ -43,7 +39,7 @@ namespace gitrows_dotnet
             _default = string.IsNullOrEmpty(@default) ? string.Empty : @default;
         }
 
-        public async Task<(string?, HttpStatusCode)> Get(string path, Func<dynamic, bool>? query = null, string method = "fetch")
+        public async Task<(string?, HttpStatusCode)> Get(string path, Dictionary<string, string>? query = null, string method = "fetch")
         {
             var pathData = GitPath.Parse(path);
             if (pathData == null)
@@ -70,21 +66,18 @@ namespace gitrows_dotnet
                 return (string.Empty, HttpStatusCode.BadRequest);
 
             var result = await PullOrFetch(constructedUrl, method);
-            if (!string.IsNullOrEmpty(result.Item1)) 
+            if (!string.IsNullOrEmpty(result.Item1))
             {
                 pathData.TryGetValue("type", out var type);
                 var parsableObject = await Parse(result.Item1, type!.Value);
-                if (parsableObject != null && query != null) 
+                if (parsableObject != null && query != null)
                 {
-                    var tmp = new List<ExpandoObject>();
-                    foreach (var item in parsableObject) 
+                    var filtered = Filter(parsableObject, query);
+                    var serialised = JsonSerializer.Serialize(filtered, new JsonSerializerOptions
                     {
-                        if (query(item)) 
-                            tmp.Add(item);
-                    }
-
-                    var filtered = JsonSerializer.Serialize(tmp);
-                    return (filtered, HttpStatusCode.OK);
+                        WriteIndented = true
+                    });
+                    return (serialised, HttpStatusCode.OK);
                 }
             }
 
@@ -208,22 +201,23 @@ namespace gitrows_dotnet
             return (null, response.StatusCode);
         }
 
-        private async List<ExpandoObject> Filter(List<ExpandoObject> data, Dictionary<string, string> query) 
+        private List<ExpandoObject> Filter(List<ExpandoObject> data, Dictionary<string, string> query)
         {
             var conditionActions = new List<Func<ExpandoObject, bool>>();
             var agregateActions = new List<Func<List<ExpandoObject>, List<ExpandoObject>>>();
-            for (var i = 0; i < query.Count; i++) 
+            for (var i = 0; i < query.Count; i++)
             {
                 var statement = query.ElementAt(i);
                 var property = statement.Key;
                 var condition = statement.Value;
 
-                // Agregate functions
+                // Agregate functions - not supported
                 if (property.ElementAt(0).Equals("$"))
                 {
 
                 }
-                else 
+                // Filter conditons
+                else
                 {
                     var split = condition.Split(':');
                     if (split.Count() < 2)
@@ -231,55 +225,98 @@ namespace gitrows_dotnet
 
                     var @operator = split[0];
                     var value = split[1];
+                    var valueType = FindType(value);
 
-                    
-
-                    switch(@operator) 
+                    switch (@operator)
                     {
+                        case "eq":
+                            if (valueType == typeof(int))
+                                conditionActions.Add(x =>
+                                    (int)(x as IDictionary<string, object>)[property] == int.Parse(value));
+                            else if (valueType == typeof(string))
+                                conditionActions.Add(x =>
+                                    (x as IDictionary<string, object>)[property].ToString().Equals(value));
+                            break;
                         case "not":
-                            conditionActions.Add((x => x != value));
+                            if (valueType == typeof(int))
+                                conditionActions.Add(x =>
+                                    (int)(x as IDictionary<string, object>)[property] != int.Parse(value));
+                            else if (valueType == typeof(string))
+                                conditionActions.Add(x =>
+                                    (string)(x as IDictionary<string, object>)[property] != value);
                             break;
                         case "lt":
+                            if (valueType == typeof(int))
+                                conditionActions.Add(x =>
+                                    (int)(x as IDictionary<string, object>)[property] < int.Parse(value));
                             break;
                         case "lte":
+                            if (valueType == typeof(int))
+                                conditionActions.Add(x =>
+                                    (int)(x as IDictionary<string, object>)[property] <= int.Parse(value));
                             break;
                         case "gt":
+                            if (valueType == typeof(int))
+                                conditionActions.Add(x =>
+                                    (int)(x as IDictionary<string, object>)[property] > int.Parse(value));
                             break;
                         case "gte":
+                            if (valueType == typeof(int))
+                                conditionActions.Add(x =>
+                                {
+                                    var a = double.Parse((x as IDictionary<string, object>)[property].ToString());
+                                    var b = int.Parse(value);
+                                    if (a >= b)
+                                        return true;
+
+                                    return false;
+                                });
                             break;
-                        case "^":
+                        case "starts":
+                            if (valueType == typeof(string))
+                                conditionActions.Add(x =>
+                                    ((string)(x as IDictionary<string, object>)[property]).StartsWith(value));
                             break;
-                        case "*":
+                        case "contains":
+                            if (valueType == typeof(string))
+                                conditionActions.Add(x =>
+                                    ((string)(x as IDictionary<string, object>)[property]).Contains(value));
                             break;
-                        case "$":
+                        case "ends":
+                            if (valueType == typeof(string))
+                                conditionActions.Add(x =>
+                                    ((string)(x as IDictionary<string, object>)[property]).EndsWith(value));
                             break;
                         default:
                             break;
                     }
                 }
             }
+
+            var tmp = new List<ExpandoObject>();
+            foreach (var action in conditionActions)
+            {
+                foreach (var datum in data)
+                {
+                    if (action(datum))
+                        tmp.Add(datum);
+                }
+            }
+
+            return tmp;
         }
 
-        private Type FindType(string value) 
+        private Type FindType(string value)
         {
-            if (!int.TryParse(value, out var _)) 
+            if (int.TryParse(value, out var _))
                 return typeof(int);
-
-            if (!float.TryParse(value, out var _))
-                return typeof(float);
-                    
-            if (!double.TryParse(value, out var _))
-                return typeof(double);
-
-            if (!short.TryParse(value, out var _))
-                return typeof(short);
 
             return typeof(string);
         }
 
-        private async Task<List<ExpandoObject>> Parse(string data, string type) 
+        private async Task<List<ExpandoObject>> Parse(string data, string type)
         {
-            switch(type) 
+            switch (type)
             {
                 case "json":
                     var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
