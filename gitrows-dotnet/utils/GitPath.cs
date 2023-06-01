@@ -5,9 +5,10 @@ namespace gitrows_dotnet.utils
 {
     public static class GitPath
     {
-        // See https://regex101.com/r/r72Yo1/1
+        // See https://regex101.com/r/mWxhnm/1
         static Regex _pathRegex = new Regex("^(?:(?:(?:(?:@)(?<ns>[\\w]+)\\/)?(?:(?<owner>[\\w-]+)?\\/)(?<repo>[\\w\\-\\.]+)(?:(?:#)(?<branch>[\\w-]+))?)|(?:\\.))\\/?(?<path>[\\w\\-\\/.]*(?:\\.(?<type>[\\w]{2,4}))|[\\w\\/]*)?(?:\\/)?");
-        static Regex _urlRegex = new Regex("https?:\\/\\/[\\w\\.]*(?<ns>github|gitlab)[\\w]*.com\\/(?<owner>[\\w-]+)\\/(?<repo>[\\w\\-\\.]+)\\/(?:(?:-\\/)?(?:blob\\/|raw\\/)?(?<branch>[\\w]+)\\/)(?<path>[\\w\\-\\/.]*(?:\\.(?<type>[\\w]{2,4}))|[\\w\\/]*)?(?:\\/)?");
+        // See https://regex101.com/r/RZneHI/1
+        static Regex _urlRegex = new Regex("https?:\\/\\/[\\w\\.]*(?<ns>github|gitlab)[\\w]*.com\\/(?<owner>[\\w-]+)\\/(?<repo>[\\w\\-\\.]+)\\/(?:(?:-\\/)?(?:blob\\/|raw\\/)?(?<branch>[\\w\\-]+)\\/)(?<path>[\\w\\-\\/.]*(?:\\.(?<type>[\\w]{2,4}))|[\\w\\/]*)?(?:\\/)?");
 
         readonly static string[] _allowedTypes = { "csv", "json", "yaml" };
         readonly static string[] _mandatoryGroups = { "ns", "owner", "repo", "path" };

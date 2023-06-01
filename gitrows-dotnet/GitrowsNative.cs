@@ -4,6 +4,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace gitrows_dotnet
 {
@@ -54,14 +55,9 @@ namespace gitrows_dotnet
 
             _repo.PathData = pathGroup.Value;
 
-            var resource = Path.GetFileName(_repo.PathData);
-            /*if (!string.IsNullOrEmpty(resource))
-            {
-                query ??= new ExpandoObject();
-                query.Id = resource;
-            }*/
+            //var resource = Path.GetFileName(_repo.PathData);
 
-            var constructedUrl = GitPath.ToUrl(path);
+            var constructedUrl = GitPath.ToUrl(path, true);
             if (string.IsNullOrEmpty(constructedUrl))
                 return (string.Empty, HttpStatusCode.BadRequest);
 
@@ -99,12 +95,33 @@ namespace gitrows_dotnet
             throw new NotImplementedException();
         }
 
-        public async Task<HttpStatusCode> Delete(string path, object? filter = null)
+        public async Task<HttpStatusCode> Delete(string path, Dictionary<string, string>? query = null)
+        {
+            var pathData = GitPath.Parse(path);
+            if (pathData == null)
+                return HttpStatusCode.BadRequest;
+
+            if (query == null)
+                return HttpStatusCode.NotModified;
+
+            pathData.TryGetValue("type", out var typeGroup);
+            if (typeGroup == null)
+                return HttpStatusCode.BadRequest;
+
+            var results = await PullOrFetch(path, "pull");
+            var data = await Parse(results.Item1, typeGroup.Value);
+            data = Filter(data, query);
+
+            var pushResults = await Push(path, data);
+            return pushResults;
+        }
+
+        public async Task<HttpStatusCode> Types(string path, object? filter = null)
         {
             throw new NotImplementedException();
         }
 
-        public async Task<HttpStatusCode> Types(string path, object? filter = null)
+        public async Task<HttpStatusCode> Push(string path, object? data = null)
         {
             throw new NotImplementedException();
         }
@@ -119,14 +136,14 @@ namespace gitrows_dotnet
             throw new NotImplementedException();
         }
 
+        //TODO base 64 decode in here
         public async Task<(string, HttpStatusCode)> Pull(string url)
         {
             var pathData = GitPath.Parse(url);
             if (pathData == null)
                 return (string.Empty, HttpStatusCode.BadRequest);
 
-            pathData.TryGetValue("path", out var pathGroup);
-            if (pathGroup == null)
+           if(!pathData.TryGetValue("path", out _))
                 return (string.Empty, HttpStatusCode.BadRequest);
 
             if (!GitPath.IsValid(pathData))
@@ -144,11 +161,11 @@ namespace gitrows_dotnet
             var response = await _sharedClient.GetAsync(constructedUrl);
             if (response.IsSuccessStatusCode)
             {
-                var x = await response.Content.ReadAsStringAsync();
-                if (string.IsNullOrEmpty(x))
+                var data = await response.Content.ReadAsStringAsync();
+                if (string.IsNullOrEmpty(data))
                     return (string.Empty, HttpStatusCode.NoContent);
 
-                var stream = new MemoryStream(Encoding.UTF8.GetBytes(x));
+                var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
                 var gitResponse = await JsonSerializer.DeserializeAsync<GitResponse>(stream);
                 if (gitResponse == null || string.IsNullOrEmpty(gitResponse.Content))
                     return (string.Empty, HttpStatusCode.NoContent);
@@ -156,7 +173,7 @@ namespace gitrows_dotnet
                 return (gitResponse.Content, response.StatusCode);
             }
 
-            return (string.Empty, HttpStatusCode.OK);
+            return (string.Empty, response.StatusCode);
         }
 
         //TODO Add headers as optional arg
@@ -182,15 +199,9 @@ namespace gitrows_dotnet
                 if (string.IsNullOrEmpty(data))
                     return (string.Empty, HttpStatusCode.NoContent);
 
-                var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
-                var gitResponse = await JsonSerializer.DeserializeAsync<GitResponse>(stream);
-                if (gitResponse == null || string.IsNullOrEmpty(gitResponse.Content))
-                    return (string.Empty, HttpStatusCode.NoContent);
-
-                return (gitResponse.Content, response.StatusCode);
+                return (data, response.StatusCode);
             }
 
-            //Request was not succesfull, attempt with tokens
             if (!string.IsNullOrEmpty(_user) && !string.IsNullOrEmpty(_token) && _repo.Ns!.Equals("github"))
             {
                 var pullResponse = await Pull(url);
@@ -211,12 +222,142 @@ namespace gitrows_dotnet
                 var property = statement.Key;
                 var condition = statement.Value;
 
-                // Agregate functions - not supported
-                if (property.ElementAt(0).Equals("$"))
+                if (property.StartsWith("$"))
                 {
+                    switch (property)
+                    {
+                        case "$count":
+                            agregateActions.Add(x =>
+                            {
+                                dynamic countObject = new ExpandoObject();
+                                countObject.Result = x.Count;
+                                return new List<ExpandoObject>
+                                {
+                                    countObject
+                                };
+                            });
+                            break;
+                        case "$avg":
+                            agregateActions.Add(x =>
+                            {
+                                if (x.TryGetAverageAsInt(condition, out var asInt))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asInt;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
 
+                                if (x.TryGetAverageAsDouble(condition, out var asDouble))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asDouble;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
+
+                                return new List<ExpandoObject>();
+                            });
+                            break;
+                        case "$sum":
+                            agregateActions.Add(x =>
+                            {
+                                if (x.TryGetSumAsInt(condition, out var asInt))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asInt;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
+
+                                if (x.TryGetSumAsDouble(condition, out var asDouble))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asDouble;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
+
+                                return new List<ExpandoObject>();
+                            });
+                            break;
+                        case "$min":
+                            agregateActions.Add(x =>
+                            {
+                                if (x.TryGetMinAsInt(condition, out var asInt))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asInt;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
+
+                                if (x.TryGetMinAsDouble(condition, out var asDouble))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asDouble;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
+
+                                return new List<ExpandoObject>();
+                            });
+                            break;
+                        case "$max":
+                            agregateActions.Add(x =>
+                            {
+                                if (x.TryGetMaxAsInt(condition, out var asInt))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asInt;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
+
+                                if (x.TryGetMaxAsDouble(condition, out var asDouble))
+                                {
+                                    dynamic countObject = new ExpandoObject();
+                                    countObject.Result = asDouble;
+                                    return new List<ExpandoObject>
+                                    {
+                                        countObject
+                                    };
+                                }
+
+                                return new List<ExpandoObject>();
+                            });
+                            break;
+                        case "$select":
+                            agregateActions.Add(x =>
+                            {
+                                if (x.TrySelectProperties(condition, out var selected))
+                                    return selected;
+
+                                return new List<ExpandoObject>();
+                            });
+                            break;
+                        case "$order":
+                            break;
+                        case "$limit":
+                            break;
+                        default:
+                            break;
+                    }
                 }
-                // Filter conditons
                 else
                 {
                     var split = condition.Split(':');
@@ -225,67 +366,105 @@ namespace gitrows_dotnet
 
                     var @operator = split[0];
                     var value = split[1];
-                    var valueType = FindType(value);
 
                     switch (@operator)
                     {
                         case "eq":
-                            if (valueType == typeof(int))
-                                conditionActions.Add(x => 
-                                x.TryParsePropertyAsInt(property, out var asInt) && asInt == int.Parse(value));
-                            else if (valueType == typeof(string))
-                                conditionActions.Add(x =>
-                                    (x as IDictionary<string, object>)[property].ToString().Equals(value));
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsInt(property, out var asInt) && asInt == int.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsDouble(property, out var asDouble) && asDouble == double.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsString(property, out var asString) && asString.Equals(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         case "not":
-                            if (valueType == typeof(int))
-                                conditionActions.Add(x =>
-                                    (int)(x as IDictionary<string, object>)[property] != int.Parse(value));
-                            else if (valueType == typeof(string))
-                                conditionActions.Add(x =>
-                                    (string)(x as IDictionary<string, object>)[property] != value);
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsInt(property, out var asInt) && asInt != int.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsDouble(property, out var asDouble) && asDouble != double.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsString(property, out var asString) && !asString.Equals(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         case "lt":
-                            if (valueType == typeof(int))
-                                conditionActions.Add(x =>
-                                    (int)(x as IDictionary<string, object>)[property] < int.Parse(value));
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsInt(property, out var asInt) && asInt < int.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsDouble(property, out var asDouble) && asDouble < double.Parse(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         case "lte":
-                            if (valueType == typeof(int))
-                                conditionActions.Add(x =>
-                                    (int)(x as IDictionary<string, object>)[property] <= int.Parse(value));
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsInt(property, out var asInt) && asInt <= int.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsDouble(property, out var asDouble) && asDouble <= double.Parse(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         case "gt":
-                            if (valueType == typeof(int))
-                                conditionActions.Add(x =>
-                                    (int)(x as IDictionary<string, object>)[property] > int.Parse(value));
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsInt(property, out var asInt) && asInt > int.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsDouble(property, out var asDouble) && asDouble > double.Parse(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         case "gte":
-                            if (valueType == typeof(int))
-                                conditionActions.Add(x =>
-                                {
-                                    var a = double.Parse((x as IDictionary<string, object>)[property].ToString());
-                                    var b = int.Parse(value);
-                                    if (a >= b)
-                                        return true;
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsInt(property, out var asInt) && asInt >= int.Parse(value))
+                                    return true;
+                                if (x.TryParsePropertyAsDouble(property, out var asDouble) && asDouble >= double.Parse(value))
+                                    return true;
 
-                                    return false;
-                                });
+                                return false;
+                            });
                             break;
                         case "starts":
-                            if (valueType == typeof(string))
-                                conditionActions.Add(x =>
-                                    ((string)(x as IDictionary<string, object>)[property]).StartsWith(value));
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsString(property, out var asString) && asString.StartsWith(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         case "contains":
-                            if (valueType == typeof(string))
-                                conditionActions.Add(x =>
-                                    ((string)(x as IDictionary<string, object>)[property]).Contains(value));
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsString(property, out var asString) && asString.Contains(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         case "ends":
-                            if (valueType == typeof(string))
-                                conditionActions.Add(x =>
-                                    ((string)(x as IDictionary<string, object>)[property]).EndsWith(value));
+                            conditionActions.Add(x =>
+                            {
+                                if (x.TryParsePropertyAsString(property, out var asString) && asString.EndsWith(value))
+                                    return true;
+
+                                return false;
+                            });
                             break;
                         default:
                             break;
@@ -303,28 +482,37 @@ namespace gitrows_dotnet
                 }
             }
 
-            return tmp;
+            if (tmp.Count > 0) 
+                data = tmp;
+
+            foreach (var action in agregateActions)
+                data = action(data);
+
+            return data;
         }
 
-        private Type FindType(string value)
-        {
-            if (int.TryParse(value, out var _))
-                return typeof(int);
-
-            return typeof(string);
-        }
-
-        private async Task<List<ExpandoObject>> Parse(string data, string type)
+        private static async Task<List<ExpandoObject>> Parse(string data, string type)
         {
             switch (type)
             {
                 case "json":
-                    var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
-                    var jsonObject = await JsonSerializer.DeserializeAsync<List<ExpandoObject>>(stream);
+                    MemoryStream stream;
+                    if (data.StartsWith('[')) 
+                    {
+                        stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
+                        var jsonList = await JsonSerializer.DeserializeAsync<List<ExpandoObject>>(stream);
+                        if (jsonList == null)
+                            return new List<ExpandoObject>();
+
+                        return jsonList;
+                    }
+
+                    stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
+                    var jsonObject = await JsonSerializer.DeserializeAsync<ExpandoObject>(stream);
                     if (jsonObject == null)
                         return new List<ExpandoObject>();
 
-                    return jsonObject;
+                    return new List<ExpandoObject>{jsonObject};
                 default:
                     return new List<ExpandoObject>();
             }
