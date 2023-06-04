@@ -35,8 +35,9 @@ namespace gitrows_dotnet.utils
             groupCollection.TryGetValue("owner", out var owner);
             groupCollection.TryGetValue("repo", out var repo);
             groupCollection.TryGetValue("path", out var groupPath);
+            groupCollection.TryGetValue("branch", out var branch);
             if (ns!.Value.Equals("github")) 
-                return $"https://api.github.com/repos/{owner!.Value}/{repo!.Value}/contents/{groupPath!.Value}";
+                return $"https://api.github.com/repos/{owner!.Value}/{repo!.Value}/contents/{groupPath!.Value}?ref={branch.Value}";
 
             //TODO Gitlab
 
@@ -81,7 +82,7 @@ namespace gitrows_dotnet.utils
             return $"https://{server}/{owner}/{repo}/-/{format}/{branch}/{path}";
         }
 
-        public static GroupCollection? ParseUrl(string path) 
+        private static GroupCollection? ParseUrl(string path) 
         {
             var match = _urlRegex.Match(path);
             if (match == null)
@@ -90,7 +91,7 @@ namespace gitrows_dotnet.utils
             return match.Groups;
         }
 
-        public static GroupCollection? ParsePath(string path)
+        private static GroupCollection? ParsePath(string path)
         {
             var match = _pathRegex.Match(path);
             if (match == null)

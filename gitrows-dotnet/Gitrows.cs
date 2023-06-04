@@ -4,6 +4,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace gitrows_dotnet
 {
@@ -107,11 +108,13 @@ namespace gitrows_dotnet
             if (typeGroup == null)
                 return HttpStatusCode.BadRequest;
 
-            var results = await Pull(path);
-            var data = await Parse(results.Item1, typeGroup.Value);
-            data = Filter(data, query);
+            var pullResponse = await Pull(path);
+            var @base = await Parse(pullResponse.Item1, typeGroup.Value);
+            var diff = Filter(@base, query);
+            var data = @base.Except(diff).ToList();
 
             var pushResults = await Push(path, data);
+            
             return pushResults;
         }
 
@@ -120,11 +123,70 @@ namespace gitrows_dotnet
             throw new NotImplementedException();
         }
 
-        public async Task<HttpStatusCode> Push(string path, object? data = null)
+        public async Task<HttpStatusCode> Push(string path, object data, string? sha = null, string method = "PUT")
         {
+            if (string.IsNullOrEmpty(_token))
+                return HttpStatusCode.Unauthorized;
 
+            var pathData = GitPath.Parse(path);
+            if (pathData == null)
+                return HttpStatusCode.BadRequest;
 
-            throw new NotImplementedException();
+            pathData.TryGetValue("path", out var pathGroup);
+            if (pathGroup == null)
+                return HttpStatusCode.BadRequest;
+
+            pathData.TryGetValue("ns", out var nsGroup);
+            if (nsGroup == null)
+                return HttpStatusCode.BadRequest;
+
+            if (!GitPath.IsValid(pathData))
+                return HttpStatusCode.BadRequest;
+
+            string? serialisedData;
+            using (var stream = new MemoryStream())
+            {
+                await JsonSerializer.SerializeAsync(stream, data, data.GetType());
+                stream.Position = 0;
+                using var reader = new StreamReader(stream);
+                serialisedData = await reader.ReadToEndAsync();
+            }
+
+            var url = GitPath.ToApi(path);
+            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Put, url);
+            PushBody body;
+            switch (nsGroup!.Value)
+            {
+                case "gitlab":
+                    throw new NotImplementedException();
+                case "github":
+                    request.Headers.Add("Authorization", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_user}:{_token}")));
+                    body = new PushBody
+                    {
+                        Content = serialisedData,
+                        Encoding = "base64",
+                        Message = _message,
+                        Sha = sha,
+                        Commiter = _author
+                    };
+
+                    break;
+                default:
+                    throw new Exception("Invalid ns");
+            }
+
+            using (var stream = new MemoryStream())
+            {
+                await JsonSerializer.SerializeAsync(stream, body, body.GetType());
+                stream.Position = 0;
+                using var reader = new StreamReader(stream);
+                serialisedData = await reader.ReadToEndAsync();
+                request.Content = new StringContent(serialisedData);
+            }
+            
+            //TODO returns not found
+            var response = await _sharedClient.SendAsync(request);
+            return response.StatusCode;
         }
 
         public async Task<HttpStatusCode> Create(string path, object? data = null)
@@ -137,14 +199,13 @@ namespace gitrows_dotnet
             throw new NotImplementedException();
         }
 
-        //TODO base 64 decode in here
         public async Task<(string, HttpStatusCode)> Pull(string url)
         {
             var pathData = GitPath.Parse(url);
             if (pathData == null)
                 return (string.Empty, HttpStatusCode.BadRequest);
 
-           if(!pathData.TryGetValue("path", out _))
+            if (!pathData.TryGetValue("path", out _))
                 return (string.Empty, HttpStatusCode.BadRequest);
 
             if (!GitPath.IsValid(pathData))
@@ -154,10 +215,10 @@ namespace gitrows_dotnet
 
             var constructedUrl = GitPath.ToApi(url);
             if (!string.IsNullOrEmpty(_user) && !string.IsNullOrEmpty(_token) && !string.IsNullOrEmpty(_repo.Ns))
-                _sharedClient.DefaultRequestHeaders.Add("Authorization", $"{_user}:{_token}");
+                _sharedClient.DefaultRequestHeaders.Add("Authorization", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_user}:{_token}")));
 
             _sharedClient.DefaultRequestHeaders.Add("User-Agent", "gitrows-dotnet");
-           
+
 
             //TODO This can be improved, too much handing around
             var response = await _sharedClient.GetAsync(constructedUrl);
@@ -172,7 +233,10 @@ namespace gitrows_dotnet
                 if (gitResponse == null || string.IsNullOrEmpty(gitResponse.Content))
                     return (string.Empty, HttpStatusCode.NoContent);
 
-                return (gitResponse.Content, response.StatusCode);
+                var decoded = Convert.FromBase64String(gitResponse.Content);
+                var str = Encoding.Default.GetString(decoded);
+
+                return (str, response.StatusCode);
             }
 
             return (string.Empty, response.StatusCode);
@@ -187,10 +251,7 @@ namespace gitrows_dotnet
                 var pullResponse = await Pull(url);
                 _repo.Private = true;
 
-                var decoded = Convert.FromBase64String(pullResponse.Item1);
-                var str = Encoding.Default.GetString(decoded);
-
-                return (str, pullResponse.Item2);
+                return (pullResponse.Item1, pullResponse.Item2);
             }
 
             _sharedClient.DefaultRequestHeaders.Add("User-Agent", "gitrows-dotnet");
@@ -485,7 +546,7 @@ namespace gitrows_dotnet
                 }
             }
 
-            if (tmp.Count > 0) 
+            if (tmp.Count > 0)
                 data = tmp;
 
             foreach (var action in agregateActions)
@@ -500,7 +561,7 @@ namespace gitrows_dotnet
             {
                 case "json":
                     MemoryStream stream;
-                    if (data.StartsWith('[')) 
+                    if (data.StartsWith('['))
                     {
                         stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
                         var jsonList = await JsonSerializer.DeserializeAsync<List<ExpandoObject>>(stream);
@@ -515,10 +576,19 @@ namespace gitrows_dotnet
                     if (jsonObject == null)
                         return new List<ExpandoObject>();
 
-                    return new List<ExpandoObject>{jsonObject};
+                    return new List<ExpandoObject> { jsonObject };
                 default:
                     return new List<ExpandoObject>();
             }
+        }
+
+        class PushBody
+        {
+            public string? Content { get; set; }
+            public string? Sha { get; set; }
+            public string? Encoding { get; set; }
+            public string? Message { get; set; }
+            public Author Commiter { get; set; }
         }
 
         class GitResponse
