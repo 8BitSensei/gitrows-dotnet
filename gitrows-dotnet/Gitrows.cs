@@ -1,4 +1,4 @@
-﻿using gitrows_dotnet.utils;
+using gitrows_dotnet.utils;
 using System.Dynamic;
 using System.Net;
 using System.Text;
@@ -108,11 +108,14 @@ namespace gitrows_dotnet
                 return HttpStatusCode.BadRequest;
 
             var pullResponse = await Pull(path);
-            var @base = await Parse(pullResponse.Item1, typeGroup.Value);
+            var @base = await Parse(pullResponse.Item1.Content!, typeGroup.Value);
             var diff = Filter(@base, query);
+            if(diff.Count == 0)
+                return HttpStatusCode.NotFound;
+
             var data = @base.Except(diff).ToList();
 
-            var pushResults = await Push(path, data);
+            var pushResults = await Push(path, data, pullResponse.Item1.Sha);
             
             return pushResults;
         }
@@ -139,34 +142,40 @@ namespace gitrows_dotnet
             if (nsGroup == null)
                 return HttpStatusCode.BadRequest;
 
+            pathData.TryGetValue("branch", out var branchGroup);
+
             if (!GitPath.IsValid(pathData))
                 return HttpStatusCode.BadRequest;
 
             string? serialisedData;
             using (var stream = new MemoryStream())
             {
-                await JsonSerializer.SerializeAsync(stream, data, data.GetType());
+                await JsonSerializer.SerializeAsync(stream, data, data.GetType(), new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
                 stream.Position = 0;
                 using var reader = new StreamReader(stream);
                 serialisedData = await reader.ReadToEndAsync();
             }
 
             var url = GitPath.ToApi(path);
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Put, url);
+            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Put, "https://api.github.com/repos/8BitSensei/Templum-Data/contents/data/templum_sites.json");
             PushBody body;
             switch (nsGroup!.Value)
             {
                 case "gitlab":
                     throw new NotImplementedException();
                 case "github":
-                    request.Headers.Add("Authorization", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_user}:{_token}")));
+                    request.Headers.Add("Authorization", $"Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_user}:{_token}"))}");
                     body = new PushBody
                     {
-                        Content = serialisedData,
+                        Content = Convert.ToBase64String(Encoding.UTF8.GetBytes(serialisedData)),
                         Encoding = "base64",
                         Message = _message,
                         Sha = sha,
-                        Commiter = _author
+                        Commiter = _author,
+                        Branch = branchGroup?.Value
                     };
 
                     break;
@@ -180,10 +189,9 @@ namespace gitrows_dotnet
                 stream.Position = 0;
                 using var reader = new StreamReader(stream);
                 serialisedData = await reader.ReadToEndAsync();
-                request.Content = new StringContent(serialisedData);
+                request.Content = new StringContent(serialisedData, Encoding.UTF8, "application/json");
             }
             
-            //TODO returns not found
             var response = await _sharedClient.SendAsync(request);
             return response.StatusCode;
         }
@@ -198,17 +206,17 @@ namespace gitrows_dotnet
             throw new NotImplementedException();
         }
 
-        public async Task<(string, HttpStatusCode)> Pull(string url)
+        async Task<(GitResponse?, HttpStatusCode)> Pull(string url)
         {
             var pathData = GitPath.Parse(url);
             if (pathData == null)
-                return (string.Empty, HttpStatusCode.BadRequest);
+                return (null, HttpStatusCode.BadRequest);
 
             if (!pathData.TryGetValue("path", out _))
-                return (string.Empty, HttpStatusCode.BadRequest);
+                return (null, HttpStatusCode.BadRequest);
 
             if (!GitPath.IsValid(pathData))
-                return (string.Empty, HttpStatusCode.BadRequest);
+                return (null, HttpStatusCode.BadRequest);
 
             //TODO set pathData to class level option
 
@@ -225,20 +233,20 @@ namespace gitrows_dotnet
             {
                 var data = await response.Content.ReadAsStringAsync();
                 if (string.IsNullOrEmpty(data))
-                    return (string.Empty, HttpStatusCode.NoContent);
+                    return (null, HttpStatusCode.NoContent);
 
                 var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
                 var gitResponse = await JsonSerializer.DeserializeAsync<GitResponse>(stream);
                 if (gitResponse == null || string.IsNullOrEmpty(gitResponse.Content))
-                    return (string.Empty, HttpStatusCode.NoContent);
+                    return (null, HttpStatusCode.NoContent);
 
                 var decoded = Convert.FromBase64String(gitResponse.Content);
-                var str = Encoding.Default.GetString(decoded);
+                gitResponse.Content = Encoding.Default.GetString(decoded);
 
-                return (str, response.StatusCode);
+                return (gitResponse, response.StatusCode);
             }
 
-            return (string.Empty, response.StatusCode);
+            return (null, response.StatusCode);
         }
 
         //TODO Add headers as optional arg
@@ -250,7 +258,7 @@ namespace gitrows_dotnet
                 var pullResponse = await Pull(url);
                 _repo.Private = true;
 
-                return (pullResponse.Item1, pullResponse.Item2);
+                return (pullResponse.Item1?.Content, pullResponse.Item2);
             }
 
             _sharedClient.DefaultRequestHeaders.Add("User-Agent", "gitrows-dotnet");
@@ -269,7 +277,7 @@ namespace gitrows_dotnet
             {
                 var pullResponse = await Pull(url);
                 _repo.Private = true;
-                return pullResponse;
+                return (pullResponse.Item1?.Content, pullResponse.Item2);
             }
 
             return (null, response.StatusCode);
@@ -545,9 +553,7 @@ namespace gitrows_dotnet
                 }
             }
 
-            if (tmp.Count > 0)
-                data = tmp;
-
+            data = tmp;
             foreach (var action in agregateActions)
                 data = action(data);
 
@@ -583,10 +589,17 @@ namespace gitrows_dotnet
 
         class PushBody
         {
+            [JsonPropertyName("content")]
             public string? Content { get; set; }
+            [JsonPropertyName("sha")]
             public string? Sha { get; set; }
+            [JsonPropertyName("encoding")]
             public string? Encoding { get; set; }
+            [JsonPropertyName("message")]
             public string? Message { get; set; }
+            [JsonPropertyName("branch")]
+            public string? Branch { get; set; }
+            [JsonPropertyName("commiter")]
             public Author Commiter { get; set; }
         }
 
@@ -594,11 +607,15 @@ namespace gitrows_dotnet
         {
             [JsonPropertyName("content")]
             public string? Content { get; set; }
+            [JsonPropertyName("sha")]
+            public string? Sha { get; set; }
         }
 
         public class Author
         {
+            [JsonPropertyName("name")]
             public string Name { get; set; } = "GitRows";
+            [JsonPropertyName("email")]
             public string Email { get; set; } = "api@gitrows.com";
         }
 

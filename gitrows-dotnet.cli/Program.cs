@@ -1,4 +1,4 @@
-﻿namespace gitrows_dotnet.cli
+namespace gitrows_dotnet.cli
 {
     public class Program 
     {
